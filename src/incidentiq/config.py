@@ -1,6 +1,12 @@
+import os
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _env_file() -> str | None:
+    """Path to the settings file, overridable so tests never read the real ``.env``."""
+    return os.environ.get("INCIDENTIQ_ENV_FILE", ".env")
 
 
 class Settings(BaseSettings):
@@ -8,7 +14,7 @@ class Settings(BaseSettings):
     database_url: str
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_env_file(),
         env_file_encoding="utf-8",
         extra="ignore",
     )

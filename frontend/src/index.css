@@ -1,111 +1,287 @@
+/* ==========================================================================
+   IncidentIQ — design tokens & base layer
+   Futuristic cyberpunk minimalism: deep surfaces, neon hairlines, one accent.
+   All five product palettes are mapped to a role below.
+   ========================================================================== */
+
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+  /* --- soft-cyan: interaction, glow, primary text ---------------------- */
+  --cy-50: #e6fefe;
+  --cy-100: #cdfefc;
+  --cy-200: #9cfcf9;
+  --cy-300: #6afbf6;
+  --cy-400: #38faf3;
+  --cy-500: #06f9f1;
+  --cy-600: #05c7c0;
+  --cy-700: #049590;
+  --cy-800: #036360;
+  --cy-900: #013230;
+  --cy-950: #012322;
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
+  /* --- sky-surge: information, neutral states -------------------------- */
+  --sg-50: #ebf5f9;
+  --sg-100: #d8ecf3;
+  --sg-200: #b0d9e8;
+  --sg-300: #89c6dc;
+  --sg-400: #62b3d0;
+  --sg-500: #3ba0c4;
+  --sg-600: #2f809d;
+  --sg-700: #236076;
+  --sg-800: #17404f;
+  --sg-900: #0c2027;
+  --sg-950: #08161b;
 
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  /* --- wisteria-blue: structure, surfaces, muted text ------------------ */
+  --wb-50: #ecf0f9;
+  --wb-100: #d8e2f3;
+  --wb-200: #b1c5e7;
+  --wb-300: #8ba8da;
+  --wb-400: #648bce;
+  --wb-500: #3d6ec2;
+  --wb-600: #31589b;
+  --wb-700: #254274;
+  --wb-800: #182c4e;
+  --wb-900: #0c1627;
+  --wb-950: #090f1b;
 
-  @media (max-width: 1024px) {
-    font-size: 16px;
-  }
+  /* --- amethyst: secondary accent, in-progress ------------------------- */
+  --am-50: #f4ecf8;
+  --am-100: #e9daf1;
+  --am-200: #d3b5e3;
+  --am-300: #bd8fd6;
+  --am-400: #a76ac8;
+  --am-500: #9145ba;
+  --am-600: #743795;
+  --am-700: #572970;
+  --am-800: #3a1c4a;
+  --am-900: #1d0e25;
+  --am-950: #140a1a;
+
+  /* --- dark-amethyst: primary action, critical, destructive ------------ */
+  --da-50: #fae6fe;
+  --da-100: #f5cefd;
+  --da-200: #ec9dfb;
+  --da-300: #e26bfa;
+  --da-400: #d83af8;
+  --da-500: #cf09f6;
+  --da-600: #a507c5;
+  --da-700: #7c0594;
+  --da-800: #530462;
+  --da-900: #290231;
+  --da-950: #1d0122;
+
+  /* --- semantic surfaces ---------------------------------------------- */
+  --bg-page: var(--wb-950);
+  --bg-panel: var(--wb-900);
+  --bg-sunken: var(--sg-950);
+  --bg-elevated: var(--am-950);
+  --bg-input: #071726;
+  --bg-hover: rgba(6, 249, 241, 0.05);
+  --bg-active: rgba(6, 249, 241, 0.09);
+
+  /* --- lines & glows ---------------------------------------------------- */
+  --line: rgba(6, 249, 241, 0.13);
+  --line-strong: rgba(6, 249, 241, 0.32);
+  --line-soft: rgba(139, 168, 218, 0.16);
+  --glow-cyan: 0 0 0 1px rgba(6, 249, 241, 0.28), 0 0 18px rgba(6, 249, 241, 0.16);
+  --glow-cta: 0 10px 30px rgba(207, 9, 246, 0.35), 0 0 0 1px rgba(216, 58, 248, 0.55);
+
+  /* --- text ------------------------------------------------------------- */
+  --text-hi: var(--cy-50);
+  --text: var(--wb-100);
+  --text-muted: var(--wb-300);
+  --text-faint: var(--wb-400);
+  --text-inverse: #05060f;
+
+  /* --- role accents ------------------------------------------------------ */
+  --accent: var(--cy-500);
+  --cta: var(--da-500);
+  --cta-hover: var(--da-400);
+  --info: var(--sg-400);
+  --violet: var(--am-400);
+  --success: var(--cy-400);
+  --danger: var(--da-400);
+
+  /* --- severity ---------------------------------------------------------- */
+  --sev-low: var(--cy-400);
+  --sev-medium: var(--sg-400);
+  --sev-high: var(--am-400);
+  --sev-critical: var(--da-400);
+
+  /* --- status ------------------------------------------------------------ */
+  --st-open: var(--sg-300);
+  --st-investigating: var(--am-300);
+  --st-resolved: var(--cy-300);
+  --st-closed: var(--wb-400);
+
+  /* --- typography -------------------------------------------------------- */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas,
+    "Liberation Mono", monospace;
+
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 20px;
+  --text-xl: 28px;
+  --text-2xl: 36px;
+
+  --tracking-caps: 0.14em;
+
+  /* --- spacing (4px scale) ------------------------------------------------ */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* --- radii -------------------------------------------------------------- */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 18px;
+
+  color-scheme: dark;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
-
-  #social .button-icon {
-    filter: invert(1) brightness(2);
-  }
-}
-
-#root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
+*,
+*::before,
+*::after {
   box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
 body {
   margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.55;
+  color: var(--text);
+  background-color: var(--bg-page);
+  background-image:
+    radial-gradient(900px 480px at 8% -8%, rgba(207, 9, 246, 0.16), transparent 60%),
+    radial-gradient(1000px 560px at 100% 0%, rgba(6, 249, 241, 0.1), transparent 55%),
+    radial-gradient(1200px 700px at 50% 120%, rgba(61, 110, 194, 0.14), transparent 65%),
+    linear-gradient(180deg, #090f1b 0%, #08161b 55%, #012322 100%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-synthesis: none;
+}
+
+/* Faint HUD grid — the only decorative texture on the page. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(6, 249, 241, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(6, 249, 241, 0.045) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(1100px 700px at 50% 0%, #000 0%, transparent 75%);
+}
+
+#root {
+  position: relative;
+  z-index: 1;
 }
 
 h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
+h2,
+h3,
+h4 {
+  margin: 0;
+  color: var(--text-hi);
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
-  }
-}
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
-  }
-}
 p {
   margin: 0;
 }
 
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
 }
 
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+a {
+  color: var(--accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+::selection {
+  background: rgba(216, 58, 248, 0.35);
+  color: var(--cy-50);
+}
+
+/* Scrollbars tuned to the palette. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(6, 249, 241, 0.35) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(6, 249, 241, 0.24);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 99px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(6, 249, 241, 0.45);
+  background-clip: padding-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
