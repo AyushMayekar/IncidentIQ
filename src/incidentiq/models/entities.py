@@ -54,6 +54,11 @@ class EvidenceSource(Base):
     __tablename__ = "evidence_sources"
     __table_args__ = (
         CheckConstraint("byte_size >= 0", name="ck_evidence_byte_size"),
+        UniqueConstraint(
+            "incident_id",
+            "content_hash",
+            name="uq_evidence_incident_content_hash",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
@@ -61,6 +66,7 @@ class EvidenceSource(Base):
         Uuid, ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False, index=True
     )
     source_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    evidence_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     content_type: Mapped[str] = mapped_column(String(100), nullable=False)
     raw_content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -71,7 +77,6 @@ class EvidenceSource(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-
 
 class InvestigationRun(Base):
     __tablename__ = "investigation_runs"

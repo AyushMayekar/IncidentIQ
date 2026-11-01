@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from incidentiq.api.routes.evidence import router as evidence_router
 from incidentiq.api.routes.incidents import router as incidents_router
 
 app = FastAPI(title="IncidentIQ API", version="0.1.0")
@@ -12,6 +13,7 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 app.include_router(incidents_router, prefix="/api/v1")
+app.include_router(evidence_router, prefix="/api/v1")
 
 
 @app.get("/health/live", tags=["health"])
