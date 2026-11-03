@@ -31,17 +31,24 @@ function messageFromBody(status: number, body: unknown): string {
   return `Request failed (${status})`
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** Perform the fetch and turn failures into readable errors. Returns the OK response. */
+async function send(path: string, init?: RequestInit): Promise<Response> {
   let response: Response
   try {
     response = await fetch(`${apiBase()}${path}`, {
       ...init,
       headers: {
-        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        // JSON bodies get a JSON header. FormData must not: the browser has to
+        // generate the multipart Content-Type together with its boundary.
+        ...(init?.body && !(init.body instanceof FormData)
+          ? { 'Content-Type': 'application/json' }
+          : {}),
         ...init?.headers,
       },
     })
-  } catch {
+  } catch (error) {
+    // A cancelled request is not a connectivity problem; let callers see it as is.
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
     throw new Error(
       'Could not reach the IncidentIQ API. Check that the server is running and try again.',
     )
@@ -57,8 +64,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(messageFromBody(response.status, body))
   }
 
+  return response
+}
+
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await send(path, init)
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
+}
+
+/** Same as `request`, for endpoints that return plain text. */
+export async function requestText(path: string, init?: RequestInit): Promise<string> {
+  const response = await send(path, init)
+  return response.text()
 }
 
 export function listIncidents(params?: { limit?: number; offset?: number }): Promise<IncidentList> {

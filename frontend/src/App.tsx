@@ -9,6 +9,7 @@ import {
 } from './api/incidents'
 import type { Incident, IncidentCreateInput, IncidentStatus } from './api/types'
 import { ConfirmDialog } from './components/ConfirmDialog'
+import { EvidenceManager } from './components/EvidenceManager'
 import { IncidentForm } from './components/IncidentForm'
 import { Modal } from './components/Modal'
 import { ToastProvider, useToast } from './components/Toast'
@@ -479,6 +480,8 @@ function Workspace() {
                       <Fact label="Last updated" value={formatDate(selected.updated_at)} />
                     </div>
                   </section>
+
+                  <EvidenceManager key={selected.id} incidentId={selected.id} />
 
                   <div className="detail-actions">
                     <button

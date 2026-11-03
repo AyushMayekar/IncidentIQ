@@ -12,14 +12,20 @@ import {
 } from './api/incidents'
 import type { Incident } from './api/types'
 
-vi.mock('./api/incidents', () => ({
-  listIncidents: vi.fn(),
-  createIncident: vi.fn(),
-  getIncident: vi.fn(),
-  updateIncident: vi.fn(),
-  deleteIncident: vi.fn(),
-  checkHealth: vi.fn(),
-}))
+vi.mock('./api/incidents', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('./api/incidents')>()
+
+  return {
+    ...actual,
+    listIncidents: vi.fn(),
+    createIncident: vi.fn(),
+    getIncident: vi.fn(),
+    updateIncident: vi.fn(),
+    deleteIncident: vi.fn(),
+    checkHealth: vi.fn(),
+  }
+})
 
 const mocked = {
   listIncidents: vi.mocked(listIncidents),
