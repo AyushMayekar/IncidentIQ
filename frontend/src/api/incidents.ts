@@ -51,6 +51,7 @@ async function send(path: string, init?: RequestInit): Promise<Response> {
     if (error instanceof DOMException && error.name === 'AbortError') throw error
     throw new Error(
       'Could not reach the IncidentIQ API. Check that the server is running and try again.',
+      { cause: error },
     )
   }
 

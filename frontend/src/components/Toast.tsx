@@ -15,6 +15,11 @@ export interface ToastInput {
   kind: ToastKind
   title: string
   message?: string
+  /**
+   * Stable identifier used to suppress duplicates (for example
+   * `evidence:<id>:failed`). Repeated pushes are ignored while visible.
+   */
+  key?: string
 }
 
 interface ToastItem extends ToastInput {
@@ -41,6 +46,8 @@ const ROLE: Record<ToastKind, 'status' | 'alert'> = {
   error: 'alert',
 }
 
+const MAX_VISIBLE = 3
+
 let nextId = 1
 
 export function ToastProvider({
@@ -53,6 +60,7 @@ export function ToastProvider({
 }) {
   const [toasts, setToasts] = useState<ToastItem[]>([])
   const timers = useRef(new Map<number, ReturnType<typeof setTimeout>>())
+  const keys = useRef(new Set<string>())
 
   const dismiss = useCallback((id: number) => {
     const timer = timers.current.get(id)
@@ -60,13 +68,36 @@ export function ToastProvider({
       clearTimeout(timer)
       timers.current.delete(id)
     }
-    setToasts((current) => current.filter((toast) => toast.id !== id))
+    setToasts((current) => {
+      const target = current.find((toast) => toast.id === id)
+      if (target?.key) keys.current.delete(target.key)
+      return current.filter((toast) => toast.id !== id)
+    })
   }, [])
 
   const push = useCallback(
     (input: ToastInput) => {
+      // A duplicate key is dropped while its toast is still visible. This is
+      // what stops polling or repeated failures from flooding the operator.
+      if (input.key && keys.current.has(input.key)) return
+      if (input.key) keys.current.add(input.key)
+
       const id = nextId++
-      setToasts((current) => [...current, { ...input, id }])
+      setToasts((current) => {
+        const next = [...current, { ...input, id }]
+        while (next.length > MAX_VISIBLE) {
+          const dropped = next.shift()
+          if (dropped?.key) keys.current.delete(dropped.key)
+          if (dropped) {
+            const droppedTimer = timers.current.get(dropped.id)
+            if (droppedTimer) {
+              clearTimeout(droppedTimer)
+              timers.current.delete(dropped.id)
+            }
+          }
+        }
+        return next
+      })
       const timer = setTimeout(
         () => dismiss(id),
         durationMs ?? DEFAULT_VISIBLE_MS[input.kind],

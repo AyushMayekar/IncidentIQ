@@ -32,7 +32,10 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not perf'"
+markers = [
+    "perf: advisory parser benchmarks; run with `pytest -m perf`",
+]
 filterwarnings = [
     "error::DeprecationWarning:incidentiq.*",
 ]

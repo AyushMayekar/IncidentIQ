@@ -17,7 +17,11 @@ EvidenceType = Literal[
 
 
 class EvidenceRead(BaseModel):
-    """Evidence metadata. Deliberately has no raw_content field."""
+    """Evidence metadata. Deliberately has no raw_content field.
+
+    Processing fields are derived from the evidence job and are safe to expose:
+    no stack traces, paths or secrets are ever stored in ``error_message``.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -31,3 +35,7 @@ class EvidenceRead(BaseModel):
     byte_size: int
     parse_status: str
     created_at: datetime
+    error_message: str | None = None
+    record_count: int = 0
+    processed_at: datetime | None = None
+    processing_duration_ms: int | None = None

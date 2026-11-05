@@ -1,6 +1,6 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import {
   checkHealth,
@@ -13,8 +13,7 @@ import {
 import type { Incident } from './api/types'
 
 vi.mock('./api/incidents', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('./api/incidents')>()
+  const actual = await importOriginal<typeof import('./api/incidents')>()
 
   return {
     ...actual,
@@ -63,7 +62,7 @@ const second = makeIncident({
 function givenIncidents(items: Incident[], total = items.length) {
   mocked.listIncidents.mockResolvedValue({ items, total, limit: 20, offset: 0 })
   mocked.getIncident.mockImplementation(async (id) => {
-    const found = items.find((i) => i.id === id)
+    const found = items.find((incident) => incident.id === id)
     if (!found) throw new Error('Incident not found.')
     return found
   })
@@ -75,21 +74,27 @@ async function renderApp() {
   return view
 }
 
-/** The incident title renders in the list row *and* the detail panel. */
-const list = () => screen.getByRole('list')
+const list = () => screen.getByRole('list', { name: 'Incidents' })
 const inList = (text: string) => within(list()).getByText(text)
 const missingFromList = (text: string) =>
   expect(within(list()).queryByText(text)).not.toBeInTheDocument()
 const successToast = () => screen.findByTestId('toast-success')
 const errorToast = () => screen.findByTestId('toast-error')
+const openIncident = (title: string) =>
+  screen.getByRole('button', { name: `Open incident: ${title}` })
 
 beforeEach(() => {
   vi.clearAllMocks()
   mocked.checkHealth.mockResolvedValue(true)
+  window.history.replaceState({}, '', '/')
 })
 
-describe('App — workspace', () => {
-  it('renders incidents, stats and an online API badge', async () => {
+afterEach(() => {
+  cleanup()
+})
+
+describe('Dashboard', () => {
+  it('renders incident cards, stats and an online API badge', async () => {
     givenIncidents([first, second])
 
     await renderApp()
@@ -97,6 +102,7 @@ describe('App — workspace', () => {
     expect(await waitFor(() => inList(first.title))).toBeInTheDocument()
     expect(inList(second.title)).toBeInTheDocument()
     expect(screen.getByText('API online')).toBeInTheDocument()
+    expect(screen.getByText('Total incidents')).toBeInTheDocument()
   })
 
   it('offers a healthy empty state when there are no incidents', async () => {
@@ -121,6 +127,7 @@ describe('App — workspace', () => {
     expect(text).not.toMatch(/next build slices/i)
     expect(text).not.toMatch(/API-connected/i)
     expect(text).not.toMatch(/PostgreSQL/i)
+    expect(text).not.toMatch(/AI Ready/i)
   })
 
   it('shows the product logo in the sidebar', async () => {
@@ -172,15 +179,185 @@ describe('App — workspace', () => {
 
   it('reports a failure when the list cannot be loaded', async () => {
     mocked.listIncidents.mockRejectedValue(new Error('Could not reach the IncidentIQ API.'))
-    const { container } = render(<App />)
+    render(<App />)
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load incidents')
-    expect(container.textContent).toContain('Could not reach the IncidentIQ API.')
+    const alert = await errorToast()
+    expect(alert).toHaveTextContent('Could not load incidents')
+    expect(alert).toHaveTextContent('Could not reach the IncidentIQ API.')
   })
 })
 
-describe('App — create incident', () => {
-  it('creates an incident after confirmation and confirms success', async () => {
+describe('Incident workspace', () => {
+  it('opens a dedicated route from a dashboard card and returns with the back link', async () => {
+    givenIncidents([first, second])
+    const user = userEvent.setup()
+    await renderApp()
+    await waitFor(() => inList(first.title))
+
+    await user.click(openIncident(first.title))
+
+    expect(await screen.findByRole('heading', { name: first.title })).toBeInTheDocument()
+    expect(window.location.pathname).toBe(`/incidents/${first.id}`)
+    expect(screen.getByText(first.description)).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Incidents' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '← Back to incidents' }))
+
+    expect(await screen.findByRole('heading', { name: 'Incidents' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/')
+  })
+
+  it('supports direct URLs and browser back navigation', async () => {
+    givenIncidents([first, second])
+    window.history.replaceState({}, '', '/')
+    window.history.pushState({}, '', `/incidents/${first.id}`)
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: first.title })).toBeInTheDocument()
+
+    window.history.back()
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Incidents' })).toBeInTheDocument(),
+    )
+  })
+
+  it('shows a recoverable error for an unknown incident', async () => {
+    givenIncidents([first])
+    mocked.getIncident.mockRejectedValue(new Error('Incident not found.'))
+    window.history.replaceState({}, '', '/incidents/missing')
+
+    render(<App />)
+
+    expect(await screen.findByText('Incident unavailable')).toBeInTheDocument()
+    expect(screen.getByText('Incident not found.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '← Back to incidents' })).toBeInTheDocument()
+  })
+
+  it('saves edits immediately and reports success', async () => {
+    const updated = { ...first, title: 'Checkout API — mitigated' }
+    givenIncidents([first, second])
+    mocked.updateIncident.mockResolvedValue(updated)
+    const user = userEvent.setup()
+    await renderApp()
+    await waitFor(() => inList(first.title))
+    await user.click(openIncident(first.title))
+    await screen.findByRole('heading', { name: first.title })
+
+    await user.click(screen.getByRole('button', { name: 'Edit incident' }))
+    const form = await screen.findByRole('dialog', { name: 'Edit incident' })
+    const titleInput = within(form).getByLabelText(/incident title/i)
+    await user.clear(titleInput)
+    await user.type(titleInput, 'Checkout API — mitigated')
+    await user.click(within(form).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(mocked.updateIncident).toHaveBeenCalledTimes(1))
+    expect(mocked.updateIncident).toHaveBeenCalledWith(first.id, {
+      title: 'Checkout API — mitigated',
+      description: first.description,
+      service: 'checkout-api',
+      severity: 'high',
+      occurred_at: null,
+    })
+    expect(await successToast()).toHaveTextContent('Changes saved')
+    expect(
+      await screen.findByRole('heading', { name: 'Checkout API — mitigated' }),
+    ).toBeInTheDocument()
+    // No intermediate confirmation dialog was required.
+    expect(screen.queryByRole('dialog', { name: 'Save your changes?' })).toBeNull()
+  })
+
+  it('changes status immediately, then reports failures without faking the value', async () => {
+    givenIncidents([first, second])
+    mocked.updateIncident.mockResolvedValue({ ...first, status: 'investigating' })
+    const user = userEvent.setup()
+    await renderApp()
+    await waitFor(() => inList(first.title))
+    await user.click(openIncident(first.title))
+    await screen.findByRole('heading', { name: first.title })
+
+    await user.selectOptions(screen.getByLabelText('Change status'), 'investigating')
+
+    await waitFor(() =>
+      expect(mocked.updateIncident).toHaveBeenCalledWith(first.id, {
+        status: 'investigating',
+      }),
+    )
+    expect(await successToast()).toHaveTextContent('Status updated')
+  })
+
+  it('keeps the previous status when the update fails', async () => {
+    givenIncidents([first, second])
+    mocked.updateIncident.mockRejectedValue(new Error('Incident not found.'))
+    const user = userEvent.setup()
+    await renderApp()
+    await waitFor(() => inList(first.title))
+    await user.click(openIncident(first.title))
+    await screen.findByRole('heading', { name: first.title })
+
+    await user.selectOptions(screen.getByLabelText('Change status'), 'closed')
+
+    expect(await errorToast()).toHaveTextContent('Could not update the status')
+    expect(screen.getByLabelText('Change status')).toHaveValue('open')
+  })
+
+  it('deletes only after confirmation, then returns to the dashboard', async () => {
+    givenIncidents([first, second])
+    mocked.deleteIncident.mockResolvedValue(undefined)
+    const user = userEvent.setup()
+    await renderApp()
+    await waitFor(() => inList(first.title))
+    await user.click(openIncident(first.title))
+    await screen.findByRole('heading', { name: first.title })
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    const confirm = await screen.findByRole('dialog', { name: 'Delete this incident?' })
+    expect(confirm).toHaveTextContent('cannot be undone')
+    expect(mocked.deleteIncident).not.toHaveBeenCalled()
+    await user.click(within(confirm).getByRole('button', { name: 'Delete incident' }))
+
+    await waitFor(() => expect(mocked.deleteIncident).toHaveBeenCalledWith(first.id))
+    expect(await successToast()).toHaveTextContent('Incident deleted')
+    expect(await screen.findByRole('heading', { name: 'Incidents' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/')
+  })
+
+  it('keeps the incident when deletion is cancelled', async () => {
+    givenIncidents([first, second])
+    const user = userEvent.setup()
+    await renderApp()
+    await waitFor(() => inList(first.title))
+    await user.click(openIncident(first.title))
+    await screen.findByRole('heading', { name: first.title })
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    const confirm = await screen.findByRole('dialog', { name: 'Delete this incident?' })
+    await user.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+
+    expect(mocked.deleteIncident).not.toHaveBeenCalled()
+    expect(screen.getByRole('heading', { name: first.title })).toBeInTheDocument()
+  })
+
+  it('shows an error when deletion fails', async () => {
+    givenIncidents([first, second])
+    mocked.deleteIncident.mockRejectedValue(new Error('Incident not found.'))
+    const user = userEvent.setup()
+    await renderApp()
+    await waitFor(() => inList(first.title))
+    await user.click(openIncident(first.title))
+    await screen.findByRole('heading', { name: first.title })
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    const confirm = await screen.findByRole('dialog', { name: 'Delete this incident?' })
+    await user.click(within(confirm).getByRole('button', { name: 'Delete incident' }))
+
+    expect(await errorToast()).toHaveTextContent('Could not delete the incident')
+    expect(screen.getByRole('heading', { name: first.title })).toBeInTheDocument()
+  })
+})
+
+describe('Create incident', () => {
+  it('creates immediately and opens the new workspace, with a success toast', async () => {
     const created = makeIncident({
       id: 'new-1',
       title: 'Search cluster degraded',
@@ -201,10 +378,6 @@ describe('App — create incident', () => {
     await user.selectOptions(within(form).getByLabelText(/severity/i), 'critical')
     await user.click(within(form).getByRole('button', { name: 'Create incident' }))
 
-    // confirmation step
-    const confirm = await screen.findByRole('dialog', { name: 'Create this incident?' })
-    await user.click(within(confirm).getByRole('button', { name: 'Create incident' }))
-
     await waitFor(() => expect(mocked.createIncident).toHaveBeenCalledTimes(1))
     expect(mocked.createIncident).toHaveBeenCalledWith({
       title: 'Search cluster degraded',
@@ -214,7 +387,11 @@ describe('App — create incident', () => {
       occurred_at: null,
     })
     expect(await successToast()).toHaveTextContent('Incident created')
-    expect(await waitFor(() => inList('Search cluster degraded'))).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: 'Search cluster degraded' }),
+    ).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/incidents/new-1')
+    expect(screen.queryByRole('dialog', { name: 'Create this incident?' })).toBeNull()
   })
 
   it('keeps the form open and shows an error when creation fails', async () => {
@@ -228,162 +405,10 @@ describe('App — create incident', () => {
     await user.type(within(form).getByLabelText(/incident title/i), 'Duplicate title')
     await user.type(within(form).getByLabelText(/^description/i), 'Something broke.')
     await user.click(within(form).getByRole('button', { name: 'Create incident' }))
-    const confirm = await screen.findByRole('dialog', { name: 'Create this incident?' })
-    await user.click(within(confirm).getByRole('button', { name: 'Create incident' }))
 
     const alert = await errorToast()
     expect(alert).toHaveTextContent('Could not create the incident')
     expect(alert).toHaveTextContent('Title is already in use.')
-    // the record must not appear in the workspace
-    expect(screen.queryByText('Duplicate title')).not.toBeInTheDocument()
-  })
-})
-
-describe('App — edit incident', () => {
-  it('saves edits after confirmation', async () => {
-    const updated = { ...first, title: 'Checkout API — mitigated' }
-    givenIncidents([first, second])
-    mocked.updateIncident.mockResolvedValue(updated)
-    const user = userEvent.setup()
-    await renderApp()
-    await waitFor(() => inList(first.title))
-
-    await user.click(screen.getByRole('button', { name: 'Edit incident' }))
-    const form = await screen.findByRole('dialog', { name: 'Edit incident' })
-    const titleInput = within(form).getByLabelText(/incident title/i)
-    await user.clear(titleInput)
-    await user.type(titleInput, 'Checkout API — mitigated')
-    await user.click(within(form).getByRole('button', { name: 'Save changes' }))
-
-    const confirm = await screen.findByRole('dialog', { name: 'Save your changes?' })
-    await user.click(within(confirm).getByRole('button', { name: 'Save changes' }))
-
-    await waitFor(() => expect(mocked.updateIncident).toHaveBeenCalledTimes(1))
-    expect(mocked.updateIncident).toHaveBeenCalledWith('3f1a4c1e-0000-4000-8000-000000000001', {
-      title: 'Checkout API — mitigated',
-      description: first.description,
-      service: 'checkout-api',
-      severity: 'high',
-      occurred_at: null,
-    })
-    expect(await successToast()).toHaveTextContent('Changes saved')
-    expect(await waitFor(() => inList('Checkout API — mitigated'))).toBeInTheDocument()
-  })
-
-  it('does not call the API when the save is cancelled', async () => {
-    givenIncidents([first, second])
-    const user = userEvent.setup()
-    await renderApp()
-    await waitFor(() => inList(first.title))
-
-    await user.click(screen.getByRole('button', { name: 'Edit incident' }))
-    const form = await screen.findByRole('dialog', { name: 'Edit incident' })
-    await user.click(within(form).getByRole('button', { name: 'Save changes' }))
-    const confirm = await screen.findByRole('dialog', { name: 'Save your changes?' })
-    await user.click(within(confirm).getByRole('button', { name: 'Cancel' }))
-
-    expect(mocked.updateIncident).not.toHaveBeenCalled()
-    expect(screen.queryByRole('dialog', { name: 'Save your changes?' })).not.toBeInTheDocument()
-  })
-})
-
-describe('App — change status', () => {
-  it('moves an incident to a new status after confirmation', async () => {
-    const updated = { ...first, status: 'investigating' as const }
-    givenIncidents([first, second])
-    mocked.updateIncident.mockResolvedValue(updated)
-    const user = userEvent.setup()
-    await renderApp()
-    await waitFor(() => inList(first.title))
-
-    await user.selectOptions(screen.getByLabelText('Change status'), 'investigating')
-
-    const confirm = await screen.findByRole('dialog', { name: 'Change status?' })
-    expect(confirm).toHaveTextContent('will move to investigating')
-    await user.click(within(confirm).getByRole('button', { name: 'Change status' }))
-
-    await waitFor(() =>
-      expect(mocked.updateIncident).toHaveBeenCalledWith(first.id, {
-        status: 'investigating',
-      }),
-    )
-    expect(await successToast()).toHaveTextContent('Status updated')
-  })
-
-  it('reverts the selector when the change is cancelled', async () => {
-    givenIncidents([first, second])
-    const user = userEvent.setup()
-    await renderApp()
-    await waitFor(() => inList(first.title))
-
-    await user.selectOptions(screen.getByLabelText('Change status'), 'closed')
-    const confirm = await screen.findByRole('dialog', { name: 'Change status?' })
-    await user.click(within(confirm).getByRole('button', { name: 'Cancel' }))
-
-    expect(mocked.updateIncident).not.toHaveBeenCalled()
-    expect(screen.getByLabelText('Change status')).toHaveValue('open')
-  })
-
-  it('surfaces a failure when the status cannot be changed', async () => {
-    givenIncidents([first, second])
-    mocked.updateIncident.mockRejectedValue(new Error('Incident not found.'))
-    const user = userEvent.setup()
-    await renderApp()
-    await waitFor(() => inList(first.title))
-
-    await user.selectOptions(screen.getByLabelText('Change status'), 'closed')
-    const confirm = await screen.findByRole('dialog', { name: 'Change status?' })
-    await user.click(within(confirm).getByRole('button', { name: 'Change status' }))
-
-    expect(await errorToast()).toHaveTextContent('Could not update the status')
-  })
-})
-
-describe('App — delete incident', () => {
-  it('deletes after confirmation and confirms success', async () => {
-    givenIncidents([first, second])
-    mocked.deleteIncident.mockResolvedValue(undefined)
-    const user = userEvent.setup()
-    await renderApp()
-    await waitFor(() => inList(first.title))
-
-    await user.click(screen.getByRole('button', { name: 'Delete' }))
-
-    const confirm = await screen.findByRole('dialog', { name: 'Delete this incident?' })
-    expect(confirm).toHaveTextContent('cannot be undone')
-    await user.click(within(confirm).getByRole('button', { name: 'Delete incident' }))
-
-    await waitFor(() => expect(mocked.deleteIncident).toHaveBeenCalledWith(first.id))
-    expect(await successToast()).toHaveTextContent('Incident deleted')
-    await waitFor(() => missingFromList(first.title))
-  })
-
-  it('keeps the incident when deletion is cancelled', async () => {
-    givenIncidents([first, second])
-    const user = userEvent.setup()
-    await renderApp()
-    await waitFor(() => inList(first.title))
-
-    await user.click(screen.getByRole('button', { name: 'Delete' }))
-    const confirm = await screen.findByRole('dialog', { name: 'Delete this incident?' })
-    await user.click(within(confirm).getByRole('button', { name: 'Cancel' }))
-
-    expect(mocked.deleteIncident).not.toHaveBeenCalled()
-    expect(inList(first.title)).toBeInTheDocument()
-  })
-
-  it('shows an error when deletion fails', async () => {
-    givenIncidents([first, second])
-    mocked.deleteIncident.mockRejectedValue(new Error('Incident not found.'))
-    const user = userEvent.setup()
-    await renderApp()
-    await waitFor(() => inList(first.title))
-
-    await user.click(screen.getByRole('button', { name: 'Delete' }))
-    const confirm = await screen.findByRole('dialog', { name: 'Delete this incident?' })
-    await user.click(within(confirm).getByRole('button', { name: 'Delete incident' }))
-
-    expect(await errorToast()).toHaveTextContent('Could not delete the incident')
-    expect(inList(first.title)).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Create incident' })).toBeInTheDocument()
   })
 })

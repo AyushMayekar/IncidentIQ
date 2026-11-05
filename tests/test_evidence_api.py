@@ -102,7 +102,9 @@ def test_upload_log_success(client: TestClient) -> None:
     assert body["content_type"] == "text/plain; charset=utf-8"
     assert body["byte_size"] == len(content)
     assert body["content_hash"] == hashlib.sha256(content).hexdigest()
-    assert body["parse_status"] == "not_required"
+    assert body["parse_status"] == "queued"
+    assert body["record_count"] == 0
+    assert body["processed_at"] is None
     assert "id" in body and "created_at" in body
     assert "raw_content" not in body
 
@@ -337,6 +339,10 @@ def test_list_returns_metadata_and_never_raw_content(client: TestClient) -> None
         "byte_size",
         "parse_status",
         "created_at",
+        "error_message",
+        "record_count",
+        "processed_at",
+        "processing_duration_ms",
     }
 
 

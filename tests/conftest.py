@@ -16,7 +16,13 @@ from sqlalchemy.pool import StaticPool
 
 from incidentiq.api.dependencies import get_db
 from incidentiq.main import app
-from incidentiq.models.entities import EvidenceSource, Incident
+from incidentiq.models.entities import (
+    EvidenceJob,
+    EvidenceSource,
+    Incident,
+    ParsedEvidenceRecord,
+    WorkerLease,
+)
 
 TEST_ENGINE = create_engine(
     "sqlite://",
@@ -38,11 +44,17 @@ TEST_SESSION = sessionmaker(bind=TEST_ENGINE, autoflush=False, expire_on_commit=
 # Only the tables the API tests need; other models use PostgreSQL JSONB.
 Incident.__table__.create(bind=TEST_ENGINE, checkfirst=True)
 EvidenceSource.__table__.create(bind=TEST_ENGINE, checkfirst=True)
+EvidenceJob.__table__.create(bind=TEST_ENGINE, checkfirst=True)
+ParsedEvidenceRecord.__table__.create(bind=TEST_ENGINE, checkfirst=True)
+WorkerLease.__table__.create(bind=TEST_ENGINE, checkfirst=True)
 
 
 def _wipe_tables() -> None:
     with TEST_ENGINE.begin() as connection:
-        # Child table first to respect the foreign key.
+        # Children first to respect foreign keys.
+        connection.execute(ParsedEvidenceRecord.__table__.delete())
+        connection.execute(EvidenceJob.__table__.delete())
+        connection.execute(WorkerLease.__table__.delete())
         connection.execute(EvidenceSource.__table__.delete())
         connection.execute(Incident.__table__.delete())
 

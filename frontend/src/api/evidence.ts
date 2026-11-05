@@ -42,3 +42,27 @@ export function getEvidenceContent(
         signalInit(signal),
     )
 }
+
+/** Idempotently requeue failed processing for one evidence file. */
+export function retryEvidence(
+    incidentId: string,
+    evidenceId: string,
+    signal?: AbortSignal,
+): Promise<Evidence> {
+    return request<Evidence>(
+        `${evidencePath(incidentId)}/${encodeURIComponent(evidenceId)}/retry`,
+        { method: 'POST', ...signalInit(signal) },
+    )
+}
+
+/** Remove evidence, its processing job and its derived records. */
+export function deleteEvidence(
+    incidentId: string,
+    evidenceId: string,
+    signal?: AbortSignal,
+): Promise<void> {
+    return request<void>(
+        `${evidencePath(incidentId)}/${encodeURIComponent(evidenceId)}`,
+        { method: 'DELETE', ...signalInit(signal) },
+    )
+}

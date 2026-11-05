@@ -35,7 +35,11 @@ function evidenceFor(incidentId: string, name: string) {
         content_type: 'text/plain; charset=utf-8',
         content_hash: 'b'.repeat(64),
         byte_size: 100,
-        parse_status: 'not_required',
+        parse_status: 'parsed',
+        record_count: 2,
+        error_message: null,
+        processed_at: '2026-10-31T10:01:00Z',
+        processing_duration_ms: 12,
         created_at: '2026-10-31T10:00:00Z',
     }
 }
@@ -63,10 +67,11 @@ function route(url: string): Response {
 afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+    window.history.replaceState({}, '', '/')
 })
 
 describe('App evidence integration', () => {
-    it('shows evidence for the selected incident and swaps it when the selection changes', async () => {
+    it('shows evidence only inside each incident workspace', async () => {
         vi.stubGlobal(
             'fetch',
             vi.fn<typeof fetch>(async (input) => route(String(input))),
@@ -75,15 +80,38 @@ describe('App evidence integration', () => {
 
         render(<App />)
 
-        expect(await screen.findByRole('heading', { name: 'Evidence', level: 3 })).toBeTruthy()
-        expect(await screen.findByText('first-only.log')).toBeTruthy()
+        // The dashboard is navigational: no evidence UI lives there.
+        await user.click(await screen.findByRole('button', { name: 'Open incident: First incident' }))
+        expect(await screen.findByRole('heading', { name: 'First incident' })).toBeTruthy()
+        expect(screen.queryByRole('heading', { name: 'Evidence', level: 3 })).toBeNull()
 
-        await user.click(screen.getByRole('button', { name: /Second incident/ }))
+        await user.click(screen.getByRole('tab', { name: 'Evidence' }))
+        expect(await screen.findByText('first-only.log')).toBeTruthy()
+        expect(await screen.findByText('Ready for chunking')).toBeTruthy()
+        expect(screen.getByText('2 records · processed in 12 ms')).toBeTruthy()
+
+        await user.click(screen.getByRole('button', { name: '← Back to incidents' }))
+        await user.click(await screen.findByRole('button', { name: 'Open incident: Second incident' }))
+        await user.click(await screen.findByRole('tab', { name: 'Evidence' }))
 
         expect(await screen.findByText('second-only.log')).toBeTruthy()
         expect(screen.queryByText('first-only.log')).toBeNull()
-        // Existing incident detail is still rendered alongside the evidence section.
-        expect(screen.getByRole('heading', { name: 'Second incident' })).toBeTruthy()
-        expect(screen.getByRole('button', { name: 'Edit incident' })).toBeTruthy()
+        expect(await screen.findByRole('heading', { name: 'Second incident' })).toBeTruthy()
+    })
+
+    it('loads a workspace from a direct URL', async () => {
+        vi.stubGlobal(
+            'fetch',
+            vi.fn<typeof fetch>(async (input) => route(String(input))),
+        )
+        window.history.replaceState({}, '', '/incidents/inc-2')
+
+        render(<App />)
+
+        expect(await screen.findByRole('heading', { name: 'Second incident' })).toBeTruthy()
+        await userEvent.setup({ applyAccept: false }).click(
+            screen.getByRole('tab', { name: 'Evidence' }),
+        )
+        expect(await screen.findByText('second-only.log')).toBeTruthy()
     })
 })

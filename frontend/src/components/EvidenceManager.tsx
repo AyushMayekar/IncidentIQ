@@ -1,16 +1,25 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
-import { getEvidenceContent, listEvidence, uploadEvidence } from '../api/evidence'
+import {
+    deleteEvidence,
+    getEvidenceContent,
+    listEvidence,
+    retryEvidence,
+    uploadEvidence,
+} from '../api/evidence'
 import {
     EVIDENCE_TYPES,
     EVIDENCE_TYPE_LABELS,
     evidenceTypeLabel,
     formatBytes,
-    humanize,
+    isActiveStatus,
     isEvidenceType,
+    processingStatusLabel,
+    processingSummary,
     validateEvidenceFile,
 } from '../api/evidenceTypes'
 import type { Evidence, EvidenceType } from '../api/evidenceTypes'
+import { ConfirmDialog } from './ConfirmDialog'
 import { Modal } from './Modal'
 import { useToast } from './Toast'
 import { formatDate } from './atoms'
@@ -18,6 +27,13 @@ import './EvidenceManager.css'
 
 interface EvidenceManagerProps {
     incidentId: string
+    /** Test override; production reads VITE_EVIDENCE_POLL_MS (default 3000). */
+    pollIntervalMs?: number
+}
+
+function configuredPollInterval(): number {
+    const raw = Number(import.meta.env.VITE_EVIDENCE_POLL_MS)
+    return Number.isFinite(raw) && raw >= 1000 ? raw : 3000
 }
 
 /** List state is tagged with the incident it belongs to, so it can never leak across incidents. */
@@ -36,7 +52,11 @@ function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : 'Unexpected error.'
 }
 
-export function EvidenceManager({ incidentId }: EvidenceManagerProps) {
+function isAbort(error: unknown): boolean {
+    return error instanceof DOMException && error.name === 'AbortError'
+}
+
+export function EvidenceManager({ incidentId, pollIntervalMs }: EvidenceManagerProps) {
     const { push } = useToast()
     const headingId = useId()
     const fileId = useId()
@@ -62,12 +82,63 @@ export function EvidenceManager({ incidentId }: EvidenceManagerProps) {
     const [content, setContent] = useState<ContentState>({ status: 'idle' })
     const viewerAbortRef = useRef<AbortController | null>(null)
 
+    const [retrying, setRetrying] = useState<string | null>(null)
+    const [deleting, setDeleting] = useState<Evidence | null>(null)
+    const [deleteBusy, setDeleteBusy] = useState(false)
+    const [pollError, setPollError] = useState<string | null>(null)
+
+    // Status bookkeeping for one-shot transition notifications.
+    const previousStatusRef = useRef(new Map<string, string>())
+    const notifiedRef = useRef(new Set<string>())
+    const pollFailuresRef = useRef(0)
+
     useEffect(() => {
         mountedRef.current = true
         return () => {
             mountedRef.current = false
         }
     }, [])
+
+    const applyItems = useCallback(
+        (items: Evidence[], notify: boolean) => {
+            const previous = previousStatusRef.current
+            if (notify) {
+                for (const item of items) {
+                    const before = previous.get(item.id)
+                    if (!before || !isActiveStatus(before)) continue
+                    if (item.parse_status === 'parsed') {
+                        const key = `evidence:${item.id}:parsed`
+                        if (!notifiedRef.current.has(key)) {
+                            notifiedRef.current.add(key)
+                            push({
+                                kind: 'success',
+                                key,
+                                title: 'Evidence ready',
+                                message: `${item.source_name} finished processing.`,
+                            })
+                        }
+                    } else if (item.parse_status === 'failed') {
+                        const key = `evidence:${item.id}:failed`
+                        if (!notifiedRef.current.has(key)) {
+                            notifiedRef.current.add(key)
+                            push({
+                                kind: 'error',
+                                key,
+                                title: 'Processing failed',
+                                message:
+                                    item.error_message ??
+                                    `${item.source_name} could not be processed.`,
+                            })
+                        }
+                    }
+                }
+            }
+            previousStatusRef.current = new Map(
+                items.map((item) => [item.id, item.parse_status]),
+            )
+        },
+        [push],
+    )
 
     // Load the list for the current incident. Switching incidents (or reloading)
     // aborts the previous request, and an aborted request can never write state.
@@ -76,6 +147,8 @@ export function EvidenceManager({ incidentId }: EvidenceManagerProps) {
         listEvidence(incidentId, controller.signal)
             .then((items) => {
                 if (controller.signal.aborted) return
+                applyItems(items, false)
+                setPollError(null)
                 setList({ forId: incidentId, status: 'ready', items, refreshing: false })
             })
             .catch((error: unknown) => {
@@ -83,7 +156,7 @@ export function EvidenceManager({ incidentId }: EvidenceManagerProps) {
                 setList({ forId: incidentId, status: 'error', message: errorMessage(error) })
             })
         return () => controller.abort()
-    }, [incidentId, reloadToken])
+    }, [incidentId, reloadToken, applyItems])
 
     const abortViewer = useCallback(() => {
         viewerAbortRef.current?.abort()
@@ -105,6 +178,53 @@ export function EvidenceManager({ incidentId }: EvidenceManagerProps) {
     const view: ListState =
         list.forId === incidentId ? list : { forId: incidentId, status: 'loading' }
     const listBusy = view.status === 'loading' || (view.status === 'ready' && view.refreshing)
+
+    const hasActive =
+        view.status === 'ready' &&
+        view.items.some((item) => isActiveStatus(item.parse_status))
+
+    // Poll only while something is queued or active. One request in flight at
+    // a time, aborted on navigation/unmount, stopped at terminal states.
+    useEffect(() => {
+        if (!hasActive) return
+        const interval = pollIntervalMs ?? configuredPollInterval()
+        let cancelled = false
+        let timer: ReturnType<typeof setTimeout> | null = null
+        let controller: AbortController | null = null
+
+        const tick = async () => {
+            controller = new AbortController()
+            try {
+                const items = await listEvidence(incidentId, controller.signal)
+                if (cancelled) return
+                applyItems(items, true)
+                pollFailuresRef.current = 0
+                setPollError(null)
+                setList((current) =>
+                    current.forId === incidentId && current.status === 'ready'
+                        ? { ...current, items }
+                        : current,
+                )
+                if (!items.some((item) => isActiveStatus(item.parse_status))) return
+            } catch (error) {
+                if (cancelled || isAbort(error)) return
+                pollFailuresRef.current += 1
+                if (pollFailuresRef.current >= 2) {
+                    setPollError(
+                        'Live status updates are temporarily unavailable. The list will refresh when the connection recovers.',
+                    )
+                }
+            }
+            if (!cancelled) timer = setTimeout(() => void tick(), interval)
+        }
+
+        timer = setTimeout(() => void tick(), interval)
+        return () => {
+            cancelled = true
+            if (timer) clearTimeout(timer)
+            controller?.abort()
+        }
+    }, [incidentId, hasActive, pollIntervalMs, applyItems])
 
     function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
         const selected = event.target.files?.[0] ?? null
@@ -138,9 +258,11 @@ export function EvidenceManager({ incidentId }: EvidenceManagerProps) {
             push({
                 kind: 'success',
                 title: 'Evidence uploaded',
-                message: `${created.source_name} added as ${evidenceTypeLabel(created.evidence_type)}.`,
+                message: `${created.source_name} queued for processing.`,
             })
             if (mountedRef.current) {
+                notifiedRef.current.delete(`evidence:${created.id}:parsed`)
+                notifiedRef.current.delete(`evidence:${created.id}:failed`)
                 setFile(null)
                 setFileError(null)
                 if (fileInputRef.current) fileInputRef.current.value = ''
@@ -152,6 +274,73 @@ export function EvidenceManager({ incidentId }: EvidenceManagerProps) {
         } finally {
             uploadingRef.current = false
             if (mountedRef.current) setUploading(false)
+        }
+    }
+
+    async function handleRetry(item: Evidence) {
+        if (retrying) return
+        setRetrying(item.id)
+        try {
+            const updated = await retryEvidence(incidentId, item.id)
+            notifiedRef.current.delete(`evidence:${item.id}:failed`)
+            notifiedRef.current.delete(`evidence:${item.id}:parsed`)
+            previousStatusRef.current.set(item.id, updated.parse_status)
+            setList((current) =>
+                current.forId === incidentId && current.status === 'ready'
+                    ? {
+                          ...current,
+                          items: current.items.map((entry) =>
+                              entry.id === updated.id ? updated : entry,
+                          ),
+                      }
+                    : current,
+            )
+            push({
+                kind: 'success',
+                title: 'Processing queued again',
+                message: `${item.source_name} will be retried.`,
+            })
+        } catch (error) {
+            push({
+                kind: 'error',
+                title: 'Could not retry processing',
+                message: errorMessage(error),
+            })
+        } finally {
+            setRetrying(null)
+        }
+    }
+
+    async function handleDelete() {
+        if (!deleting) return
+        setDeleteBusy(true)
+        try {
+            await deleteEvidence(incidentId, deleting.id)
+            setList((current) =>
+                current.forId === incidentId && current.status === 'ready'
+                    ? {
+                          ...current,
+                          items: current.items.filter((entry) => entry.id !== deleting.id),
+                      }
+                    : current,
+            )
+            previousStatusRef.current.delete(deleting.id)
+            notifiedRef.current.delete(`evidence:${deleting.id}:parsed`)
+            notifiedRef.current.delete(`evidence:${deleting.id}:failed`)
+            push({
+                kind: 'success',
+                title: 'Evidence deleted',
+                message: `${deleting.source_name} and its parsed records were removed.`,
+            })
+            setDeleting(null)
+        } catch (error) {
+            push({
+                kind: 'error',
+                title: 'Could not delete the evidence',
+                message: errorMessage(error),
+            })
+        } finally {
+            setDeleteBusy(false)
         }
     }
 
@@ -185,7 +374,13 @@ export function EvidenceManager({ incidentId }: EvidenceManagerProps) {
                     <h3 id={headingId}>Evidence</h3>
                     {view.status === 'ready' && (
                         <span className="evidence__count">
-                            {view.items.length} {view.items.length === 1 ? 'record' : 'records'}
+                            {view.items.length} {view.items.length === 1 ? 'file' : 'files'}
+                        </span>
+                    )}
+                    {hasActive && (
+                        <span className="evidence__live" role="status">
+                            <span className="evidence-spinner" aria-hidden="true" />
+                            Processing
                         </span>
                     )}
                 </div>
@@ -274,6 +469,13 @@ export function EvidenceManager({ incidentId }: EvidenceManagerProps) {
                 </div>
             </form>
 
+            {pollError && (
+                <div className="evidence-banner" role="status">
+                    <b>Live updates paused</b>
+                    <span>{pollError}</span>
+                </div>
+            )}
+
             {view.status === 'loading' && (
                 <div className="evidence-state" role="status">
                     <span className="evidence-spinner" aria-hidden="true" />
@@ -305,44 +507,111 @@ export function EvidenceManager({ incidentId }: EvidenceManagerProps) {
 
             {view.status === 'ready' && view.items.length > 0 && (
                 <ul className="evidence-list" aria-label="Evidence records">
-                    {view.items.map((item) => (
-                        <li key={item.id} className="evidence-item">
-                            <div className="evidence-item__top">
-                                <div className="evidence-item__heading">
-                                    <b className="evidence-item__name">{item.source_name}</b>
-                                    <span className="evidence-badge">{evidenceTypeLabel(item.evidence_type)}</span>
+                    {view.items.map((item) => {
+                        const active = isActiveStatus(item.parse_status)
+                        const failed = item.parse_status === 'failed'
+                        const summary = processingSummary(item)
+                        return (
+                            <li key={item.id} className="evidence-item">
+                                <div className="evidence-item__top">
+                                    <div className="evidence-item__heading">
+                                        <b className="evidence-item__name">{item.source_name}</b>
+                                        <span className="evidence-badge">{evidenceTypeLabel(item.evidence_type)}</span>
+                                    </div>
+                                    <div className="evidence-item__actions">
+                                        <button
+                                            type="button"
+                                            className="btn btn--ghost btn--sm"
+                                            onClick={() => openViewer(item)}
+                                            aria-label={`View ${item.source_name}`}
+                                        >
+                                            View
+                                        </button>
+                                        {failed && (
+                                            <button
+                                                type="button"
+                                                className="btn btn--ghost btn--sm"
+                                                onClick={() => void handleRetry(item)}
+                                                disabled={retrying === item.id}
+                                                aria-label={`Retry processing ${item.source_name}`}
+                                            >
+                                                {retrying === item.id && (
+                                                    <span className="btn__spinner" aria-hidden="true" />
+                                                )}
+                                                Retry
+                                            </button>
+                                        )}
+                                        <button
+                                            type="button"
+                                            className="btn btn--danger btn--sm"
+                                            onClick={() => setDeleting(item)}
+                                            disabled={active}
+                                            title={
+                                                active
+                                                    ? 'Wait for processing to finish before deleting.'
+                                                    : undefined
+                                            }
+                                            aria-label={`Delete ${item.source_name}`}
+                                        >
+                                            Delete
+                                        </button>
+                                    </div>
                                 </div>
-                                <button
-                                    type="button"
-                                    className="btn btn--ghost btn--sm"
-                                    onClick={() => openViewer(item)}
-                                    aria-label={`View ${item.source_name}`}
-                                >
-                                    View
-                                </button>
-                            </div>
-                            <dl className="evidence-item__meta">
-                                <div>
-                                    <dt>MIME type</dt>
-                                    <dd>{item.content_type}</dd>
-                                </div>
-                                <div>
-                                    <dt>Size</dt>
-                                    <dd>{formatBytes(item.byte_size)}</dd>
-                                </div>
-                                <div>
-                                    <dt>Added</dt>
-                                    <dd>{formatDate(item.created_at)}</dd>
-                                </div>
-                                <div>
-                                    <dt>Parse status</dt>
-                                    <dd>{humanize(item.parse_status)}</dd>
-                                </div>
-                            </dl>
-                        </li>
-                    ))}
+                                <dl className="evidence-item__meta">
+                                    <div>
+                                        <dt>MIME type</dt>
+                                        <dd>{item.content_type}</dd>
+                                    </div>
+                                    <div>
+                                        <dt>Size</dt>
+                                        <dd>{formatBytes(item.byte_size)}</dd>
+                                    </div>
+                                    <div>
+                                        <dt>Added</dt>
+                                        <dd>{formatDate(item.created_at)}</dd>
+                                    </div>
+                                    <div>
+                                        <dt>Processing</dt>
+                                        <dd
+                                            className={`evidence-status evidence-status--${item.parse_status}`}
+                                        >
+                                            {active && (
+                                                <span className="evidence-spinner" aria-hidden="true" />
+                                            )}
+                                            {processingStatusLabel(item.parse_status)}
+                                        </dd>
+                                    </div>
+                                </dl>
+                                {summary && <small className="evidence-item__summary">{summary}</small>}
+                                {failed && (
+                                    <div className="evidence-banner evidence-banner--error" role="alert">
+                                        <b>Processing failed</b>
+                                        <span>
+                                            {item.error_message ??
+                                                'This file could not be processed. Retry or replace it.'}
+                                        </span>
+                                    </div>
+                                )}
+                            </li>
+                        )
+                    })}
                 </ul>
             )}
+
+            <ConfirmDialog
+                open={deleting !== null}
+                tone="danger"
+                title="Delete this evidence?"
+                description={
+                    deleting
+                        ? `"${deleting.source_name}" will be permanently removed together with its parsed records. You will need to upload the file again to recover it.`
+                        : ''
+                }
+                confirmLabel="Delete evidence"
+                busy={deleteBusy}
+                onCancel={() => !deleteBusy && setDeleting(null)}
+                onConfirm={() => void handleDelete()}
+            />
 
             <Modal
                 open={viewing !== null}

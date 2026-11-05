@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Evidence } from '../api/evidenceTypes'
@@ -39,10 +39,10 @@ function installFetch(handler: Handler) {
     return fetchMock
 }
 
-function renderManager(incidentId = 'inc-1') {
+function renderManager(incidentId = 'inc-1', pollIntervalMs?: number) {
     return render(
         <ToastProvider>
-            <EvidenceManager incidentId={incidentId} />
+            <EvidenceManager incidentId={incidentId} pollIntervalMs={pollIntervalMs} />
         </ToastProvider>,
     )
 }
@@ -390,5 +390,205 @@ describe('EvidenceManager incident switching', () => {
 
         expect(screen.queryByText('late-alpha.log')).toBeNull()
         expect(screen.getByText('beta.log')).toBeTruthy()
+    })
+})
+describe('EvidenceManager processing states', () => {
+    it('uses honest processing labels and shows record counts, never fake percentages', async () => {
+        installFetch(() =>
+            json([
+                makeEvidence({ id: 'ev-q', source_name: 'queued.log', parse_status: 'queued' }),
+                makeEvidence({
+                    id: 'ev-p',
+                    source_name: 'parsed.log',
+                    parse_status: 'parsed',
+                    record_count: 12,
+                    processing_duration_ms: 34,
+                }),
+                makeEvidence({
+                    id: 'ev-f',
+                    source_name: 'failed.log',
+                    parse_status: 'failed',
+                    error_message: 'Evidence could not be processed. Retry the file or check its contents.',
+                }),
+            ]),
+        )
+
+        renderManager()
+
+        const list = await screen.findByRole('list', { name: 'Evidence records' })
+        expect(within(list).getByText('Waiting to process')).toBeTruthy()
+        expect(within(list).getByText('Ready for chunking')).toBeTruthy()
+        expect(within(list).getAllByText('Processing failed').length).toBeGreaterThan(0)
+        expect(within(list).getByText('12 records · processed in 34 ms')).toBeTruthy()
+        expect(
+            within(list).getByText('Evidence could not be processed. Retry the file or check its contents.'),
+        ).toBeTruthy()
+        const text = list.textContent ?? ''
+        expect(text).not.toMatch(/AI Ready/i)
+        expect(text).not.toMatch(/%/)
+    })
+
+    it('polls while work is active, notifies once, and stops at a terminal state', async () => {
+        let listCalls = 0
+        installFetch((url) => {
+            if (url.endsWith('/evidence')) {
+                listCalls += 1
+                return json([
+                    listCalls === 1
+                        ? makeEvidence({ parse_status: 'queued' })
+                        : makeEvidence({
+                              parse_status: 'parsed',
+                              record_count: 1,
+                              processing_duration_ms: 5,
+                          }),
+                ])
+            }
+            return json([])
+        })
+
+        renderManager('inc-1', 25)
+
+        expect(await screen.findByText('Waiting to process')).toBeTruthy()
+        expect(await screen.findByText('Ready for chunking')).toBeTruthy()
+        const toast = await screen.findByTestId('toast-success')
+        expect(toast).toHaveTextContent('Evidence ready')
+        expect(toast).toHaveTextContent('checkout.log finished processing.')
+
+        const settledCalls = listCalls
+        await new Promise((resolve) => setTimeout(resolve, 120))
+        expect(listCalls).toBe(settledCalls)
+        // Exactly one completion toast, even after further polling windows.
+        expect(screen.getAllByTestId('toast-success')).toHaveLength(1)
+    })
+
+    it('retries failed evidence through the retry endpoint', async () => {
+        const fetchMock = installFetch((url, init) => {
+            if (init?.method === 'POST' && url.endsWith('/retry')) {
+                return json(
+                    makeEvidence({
+                        parse_status: 'queued',
+                        error_message: null,
+                    }),
+                    init.method === 'POST' ? 202 : 200,
+                )
+            }
+            if (url.endsWith('/evidence')) {
+                return json([
+                    makeEvidence({
+                        parse_status: 'failed',
+                        error_message: 'Evidence could not be processed.',
+                    }),
+                ])
+            }
+            return json([])
+        })
+        const user = userEvent.setup({ applyAccept: false })
+        renderManager('inc-1', 5000)
+
+        await screen.findAllByText('Processing failed')
+        await user.click(screen.getByRole('button', { name: 'Retry processing checkout.log' }))
+
+        await waitFor(() =>
+            expect(
+                fetchMock.mock.calls.some(
+                    ([url, init]) =>
+                        init?.method === 'POST' &&
+                        String(url).endsWith('/incidents/inc-1/evidence/ev-1/retry'),
+                ),
+            ).toBe(true),
+        )
+        expect(await screen.findByTestId('toast-success')).toHaveTextContent(
+            'Processing queued again',
+        )
+        expect(await screen.findByText('Waiting to process')).toBeTruthy()
+    })
+
+    it('deletes evidence only after confirmation and reports the outcome', async () => {
+        let deleted = false
+        const fetchMock = installFetch((url, init) => {
+            if (init?.method === 'DELETE') {
+                deleted = true
+                return new Response(null, { status: 204 })
+            }
+            if (url.endsWith('/evidence')) {
+                return json(
+                    deleted
+                        ? []
+                        : [
+                              makeEvidence({
+                                  parse_status: 'parsed',
+                                  record_count: 1,
+                              }),
+                          ],
+                )
+            }
+            return json([])
+        })
+        const user = userEvent.setup({ applyAccept: false })
+        renderManager('inc-1', 5000)
+        await screen.findByText('checkout.log')
+
+        await user.click(screen.getByRole('button', { name: 'Delete checkout.log' }))
+        const confirm = await screen.findByRole('dialog', { name: 'Delete this evidence?' })
+        expect(confirm).toHaveTextContent('parsed records')
+        expect(
+            fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE'),
+        ).toBe(false)
+
+        await user.click(within(confirm).getByRole('button', { name: 'Delete evidence' }))
+
+        await waitFor(() =>
+            expect(
+                fetchMock.mock.calls.some(
+                    ([url, init]) =>
+                        init?.method === 'DELETE' &&
+                        String(url).endsWith('/incidents/inc-1/evidence/ev-1'),
+                ),
+            ).toBe(true),
+        )
+        expect(await screen.findByTestId('toast-success')).toHaveTextContent(
+            'Evidence deleted',
+        )
+        expect(await screen.findByText(EMPTY_COPY)).toBeTruthy()
+    })
+
+    it('keeps evidence when deletion is cancelled and blocks deleting active files', async () => {
+        const fetchMock = installFetch(() =>
+            json([makeEvidence({ parse_status: 'parsed', record_count: 1 })]),
+        )
+        const user = userEvent.setup({ applyAccept: false })
+        renderManager('inc-1', 5000)
+        await screen.findByText('checkout.log')
+
+        await user.click(screen.getByRole('button', { name: 'Delete checkout.log' }))
+        const confirm = await screen.findByRole('dialog', { name: 'Delete this evidence?' })
+        await user.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+        expect(
+            fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE'),
+        ).toBe(false)
+
+        cleanup()
+        vi.unstubAllGlobals()
+        installFetch(() => json([makeEvidence({ parse_status: 'parsing' })]))
+        renderManager('inc-1', 5000)
+        await screen.findByText('Parsing evidence')
+        const deleteButton = screen.getByRole('button', {
+            name: 'Delete checkout.log',
+        }) as HTMLButtonElement
+        expect(deleteButton.disabled).toBe(true)
+    })
+
+    it('limits delete and retry to the actions that genuinely apply', async () => {
+        installFetch(() =>
+            json([
+                makeEvidence({ id: 'ev-parsed', parse_status: 'parsed', record_count: 1 }),
+            ]),
+        )
+        renderManager('inc-1', 5000)
+        await screen.findByText('checkout.log')
+
+        // Parsed evidence cannot be retried, so no Retry action is offered.
+        expect(screen.queryByRole('button', { name: /Retry processing/ })).toBeNull()
+        expect(screen.getByRole('button', { name: 'Delete checkout.log' })).toBeTruthy()
     })
 })
