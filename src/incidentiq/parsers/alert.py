@@ -173,12 +173,25 @@ class AlertParser(BaseParser):
 def _blocks(text: str) -> list[list[tuple[int, str]]]:
     blocks: list[list[tuple[int, str]]] = []
     current: list[tuple[int, str]] = []
+
     for line_number, line in iter_lines(text):
-        if line.strip():
-            current.append((line_number, line))
-        elif current:
+        stripped = line.strip()
+
+        if not stripped:
+            continue
+
+        is_new_alert = (
+            stripped.startswith("Alert:")
+            or stripped.startswith("Alert Name:")
+        )
+
+        if is_new_alert and current:
             blocks.append(current)
             current = []
+
+        current.append((line_number, line))
+
     if current:
         blocks.append(current)
+
     return blocks
